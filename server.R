@@ -1,7 +1,9 @@
 library(ggplot2)
+library(dplyr)
 
 function(input, output, session) {
   # Load example data
+  #TODO add "load example" button instead
   ex_dat <- read.csv("June2023palbolabelingmerged2.csv")
   ex_seq <- read.csv("Palbo sequence.csv")
   
@@ -101,9 +103,10 @@ function(input, output, session) {
     valid_column_names <- grep("^[A-Z]\\.[0-9]{1,2}$", names(dat), value = TRUE)
     sel <- dat[, valid_column_names]
     
-    # Scale the values
-    #TODO
-    
+    # Normalize
+    sel <- sel %>%
+      rowwise() %>%
+      mutate(across(everything(), ~ . / sum(c_across(everything()))))
     
     # 
     class <- c()
@@ -112,7 +115,7 @@ function(input, output, session) {
     
     for (i in 1:ncol(sel)) {
       class <- append(class, seq[, 'class'])
-      x <- append(x, sel[, i])
+      x <- append(x, unlist(sel[, i]))
       names <-
         append(names, rep(colnames(sel)[i], length(sel[, i])))
     }
@@ -123,8 +126,7 @@ function(input, output, session) {
     output$ggPlot <- renderPlot({
       ggplot(final_dat, aes(x = class, y = x, fill = names)) +
         geom_bar(stat = "identity", position = "stack") +
-        labs(x = "Group", y = "Concentration") +
-        theme_minimal()
+        labs(x = "Group", y = "Concentration")
     })
   })
 }
