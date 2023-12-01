@@ -1,0 +1,226 @@
+---
+title: "Flux data"
+output:
+  html_document:
+    df_print: paged
+runtime: shiny
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(shiny)
+```
+
+```{r}
+palbo <- read.csv("June2023palbolabelingmerged2.csv")
+palboSequence <- read.csv("Palbo sequence.csv")
+```
+
+```{r}
+# Select metabolites, samples and time
+analysis <- palbo$Analysis
+analysis <- levels(factor(analysis))
+metabolites <- unique(palbo$Analyte)
+times <- sort(unique(palboSequence$time, incomparables = NA, na.rm = TRUE))
+groups <- unique(palboSequence$class)
+isotopologues <- names(palbo)[grepl("^[A-Z]\\.[0-9]{1,2}$", names(palbo))]
+```
+
+
+```{r}
+# Normalization to row sums
+normalizedRowSums <- palbo
+isotopologuesNum <- palbo[isotopologues]
+
+normalizedRowSums[isotopologues] <- isotopologuesNum %>%
+  mutate(across(everything(), ~ ./rowSums(isotopologuesNum, na.rm = TRUE)))
+```
+
+
+```{r}
+# Normalization to A.0
+normalize_to_zero <- function(df) {
+  reference_column <- df[["A.0"]]
+  normalized_df <- df / reference_column
+  return(normalized_df)
+}
+
+normalizedZero <- palbo
+normalizedZero[isotopologues] <- normalize_to_zero(isotopologuesNum)
+```
+
+---
+
+### Select metabolite & sample
+
+```{r echo = FALSE}
+selectInput("metabolite", "Choose one metabolite", choices = metabolites)
+selectInput("sample", "Choose one sample", choices = analysis)
+
+selectedRowNorm <- reactive({
+  req(input$metabolite, input$sample)
+  metaboliteSample <- normalizedRowSums %>%
+    filter(Analyte == input$metabolite & Analysis == input$sample) %>%
+    select(matches("^[A-Z]\\.[0-9]{1,2}$")) %>%
+    t() %>%
+    na.omit() %>%
+    as.data.frame() %>%
+    rownames_to_column(var = "X1") %>%
+    rename_with(~"X2", 2) %>%
+    mutate(X2 = as.numeric(X2)) %>%
+    mutate(X2 = 100*X2) # peak area percentage
+
+  return(metaboliteSample)
+})
+
+selectedZeroNorm <- reactive({
+  req(input$metabolite, input$sample)
+  metSampleZero <- normalizedZero %>%
+    filter(Analyte == input$metabolite & Analysis == input$sample) %>%
+    select(matches("^[A-Z]\\.[1-9][0-9]?$")) %>%
+    t() %>%
+    na.omit() %>%
+    as.data.frame() %>%
+    rownames_to_column(var = "X1") %>%
+    rename_with(~"X2", 2) %>%
+    mutate(X2 = as.numeric(X2)) %>%
+    mutate(X2 = 100*X2)
+
+  return(metSampleZero)
+})
+
+print("Normalized to total row sum")
+renderPlot({
+  ggplot(selectedRowNorm(), aes(X1, X2, fill = "pink")) +
+      geom_bar(stat = "identity") +
+      labs(x = "Labels", y = "Peak area (%)", title = input$metabolite) +
+      ylim(0, 100) +
+      guides(fill = "none")
+})
+
+print("Normalized to A.0")
+renderPlot({
+  ggplot(selectedZeroNorm(), aes(X1, X2, fill = "pink")) +
+      geom_bar(stat = "identity") +
+      labs(x = "Labels", y = "Peak area (%)", title = input$metabolite) +
+      ylim(0, 100) +
+      guides(fill = "none")
+})
+```
+
+**Fractional Contribution**
+
+```{r fractional contribution}
+renderText({
+  fc <- sum(selectedRowNorm()$X2 * (seq_along(selectedRowNorm()$X2) - 1)/nrow(selectedRowNorm()))
+  
+  paste(round(fc, 2), "%", sep="")
+})
+```
+
+
+---
+
+### One metabolite, group over time
+
+```{r}
+selectInput("groupMetabolite", "Choose one metabolite", choices = metabolites)
+selectInput("group", "Select group", choices = groups)
+
+selectedFeature <- reactive({
+  req(input$groupMetabolite, input$group)
+  samplesGroup <- palboSequence[palboSequence$class %in% input$group, 'sample']
+  filtered_data <- normalizedRowSums %>%
+    filter(Analyte == input$groupMetabolite,
+             Analysis %in% samplesGroup) %>%
+    select(-where(~all(is.na(.)))) %>%
+    pivot_longer(cols = matches("^[A-Z]\\.[1-9][0-9]?$"), names_to = "names", values_to = "x") %>%
+    select(names, x, sample = Analysis) %>%
+    mutate(time = palboSequence$time[match(sample, palboSequence$sample)])
+  
+  return(filtered_data)
+})
+
+renderPlot({
+  ggplot(selectedFeature(), aes(fill = names, x = as.factor(time), y = x)) +
+        geom_bar(position = "dodge", stat = "identity") +
+        labs(x = "Time", y = "Relative abundance", title = input$onlyMetabolite)
+})
+
+renderTable({
+  selectedFeature()
+})
+```
+
+---
+
+### Isotopologues
+
+```{r}
+selectInput("isotopologues", "Choose isotopologues", choices = isotopologues, multiple = TRUE)
+selectInput("isoMetabolite", "Select metabolite", choices = metabolites)
+
+selectedIso <- reactive({
+  req(input$isotopologues, input$isoMetabolite)
+
+  data <- normalizedZero %>%
+    filter(Analyte == input$isoMetabolite) %>%
+    select(-where(~all(is.na(.)))) %>%
+    pivot_longer(cols = input$isotopologues, names_to = "names", values_to = "x") %>%
+    select(names, x, class = Analysis) %>%
+    mutate(time = palboSequence$time[match(class, palboSequence$sample)],
+          class = palboSequence$class[match(class, palboSequence$sample)]
+    ) %>%
+    filter(!(class %in% c("Blank", "QC no label"))) %>%
+    unite(col = group_time, class, time, sep = "_")
+
+  return(data)
+})
+
+renderPlot({
+  ggplot(selectedIso(), aes(fill = names, x = group_time, y = x)) +
+        geom_bar(position = "stack", stat = "identity") +
+        labs(x = "Groups", y = "Relative abundance", , title = input$onlyMetabolite)
+})
+```
+
+---
+
+### Multiple groups, one time
+
+Scaled to A.0
+
+```{r}
+selectInput("metaboliteTime", "Choose one metabolite", choices = metabolites)
+selectInput("timeF", "Choose time point", choices = times)
+
+selectedTime <- reactive({
+  req(input$metaboliteTime, input$timeF)
+  
+  sequence <- palboSequence %>%
+    filter(time == input$timeF) %>%
+    select(-where(~all(is.na(.)))) 
+
+  filtered_data <- normalizedZero %>%
+    filter(Analyte == input$metaboliteTime) %>%
+    filter(Analysis %in% sequence$sample) %>%
+    select(-where(~all(is.na(.))))
+  
+  final_data <- filtered_data %>%
+    pivot_longer(cols = matches("^[A-Z]\\.[1-9][0-9]?$"), names_to = "names", values_to = "x") %>%
+    select(names, x, class = Analysis) %>%
+    mutate(class = palboSequence$class[match(class, palboSequence$sample)])
+
+  return(final_data)
+})
+
+renderPlot({
+  ggplot(selectedTime(), aes(x = class, y = x, fill = names)) +
+        geom_bar(stat = "identity", position = "dodge") +
+        labs(x = "Group", y = "Concentration", title = input$metaboliteTime) +
+        theme_minimal()
+})
+```
