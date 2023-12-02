@@ -26,6 +26,7 @@ analysis <- levels(factor(analysis))
 metabolites <- unique(palbo$Analyte)
 times <- sort(unique(palboSequence$time, incomparables = NA, na.rm = TRUE))
 groups <- unique(palboSequence$class)
+groups <- groups[!groups %in% c("Blank", "QC no label")]
 isotopologues <- names(palbo)[grepl("^[A-Z]\\.[0-9]{1,2}$", names(palbo))]
 ```
 
@@ -151,7 +152,8 @@ renderPlot({
 })
 
 renderTable({
-  selectedFeature()
+  selectedFeature() %>%
+    arrange(time)
 })
 ```
 
@@ -164,25 +166,25 @@ selectInput("isotopologues", "Choose isotopologues", choices = isotopologues, mu
 selectInput("isoMetabolite", "Select metabolite", choices = metabolites)
 
 selectedIso <- reactive({
-  req(input$isotopologues, input$isoMetabolite)
+  req(input$isotopologues)
 
   data <- normalizedZero %>%
     filter(Analyte == input$isoMetabolite) %>%
+    filter(names %in% input$isotopologues) %>%
     select(-where(~all(is.na(.)))) %>%
-    pivot_longer(cols = input$isotopologues, names_to = "names", values_to = "x") %>%
+    pivot_longer(names_to = "names", values_to = "x") %>%
     select(names, x, class = Analysis) %>%
     mutate(time = palboSequence$time[match(class, palboSequence$sample)],
           class = palboSequence$class[match(class, palboSequence$sample)]
     ) %>%
     filter(!(class %in% c("Blank", "QC no label"))) %>%
     unite(col = group_time, class, time, sep = "_")
-
   return(data)
 })
 
 renderPlot({
-  ggplot(selectedIso(), aes(fill = names, x = group_time, y = x)) +
-        geom_bar(position = "stack", stat = "identity") +
+  ggplot(selectedIso(), aes(fill = group_time, x = names, y = x)) +
+        geom_bar(position = "dodge", stat = "identity") +
         labs(x = "Groups", y = "Relative abundance", , title = input$onlyMetabolite)
 })
 ```
@@ -224,3 +226,14 @@ renderPlot({
         theme_minimal()
 })
 ```
+
+
+## Statistics
+
+Compare groups
+
+```{r}
+
+```
+
+Compare within a group (changes over time)
